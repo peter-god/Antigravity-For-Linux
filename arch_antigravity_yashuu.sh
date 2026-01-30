@@ -80,23 +80,62 @@ curl -fsSL "$PKG_INDEX_URL" -o Packages
 # =============================
 # PARSE LATEST VERSION
 # =============================
-echo "[*] Parsing latest Antigravity version..."
-
-read -r DEBVER DEBFILENAME DEBSHA256 <<< "$(
+mapfile -t candidates < <(
   awk '
-    BEGIN { pkg=""; ver=""; file=""; sha="" }
-    /^Package: antigravity$/ { pkg="antigravity"; next }
-    pkg=="antigravity" && /^Version:/ { ver=$2 }
-    pkg=="antigravity" && /^Filename:/ { file=$2 }
-    pkg=="antigravity" && /^SHA256:/ { sha=$2 }
-    NF==0 && pkg=="antigravity" { print ver, file, sha; exit }
-  ' Packages
-)"
+    function emit() {
+      if (in_pkg && ver != "" && file != "" && sha != "") {
+        print ver "\t" file "\t" sha
+      }
+      ver=""; file=""; sha=""
+    }
 
-[[ -z "$DEBVER" ]] && { echo "[-] Failed to parse version."; exit 1; }
+    {
+      sub(/\r$/, "", $0)   # CRLF safe
+    }
+
+    # nový záznam balíka: ak sme boli v antigravity, emitni pred resetom
+    /^Package:[[:space:]]*/ {
+      emit()
+      in_pkg = ($2 == "antigravity")
+      next
+    }
+
+    in_pkg && /^Version:[[:space:]]*/  { sub(/^Version:[[:space:]]*/,  "", $0); ver=$0; next }
+    in_pkg && /^Filename:[[:space:]]*/ { sub(/^Filename:[[:space:]]*/, "", $0); file=$0; next }
+    in_pkg && /^SHA256:[[:space:]]*/   { sub(/^SHA256:[[:space:]]*/,   "", $0); sha=$0; next }
+
+    # koniec stanza (prázdny alebo whitespace-only riadok)
+    in_pkg && /^[[:space:]]*$/ { emit(); next }
+
+    END { emit() }
+  ' Packages
+)
+
+if ((${#candidates[@]} == 0)); then
+  echo "[-] Failed to parse any antigravity entries."
+  exit 1
+fi
+
+latest_ver=""
+latest_file=""
+latest_sha=""
+
+for line in "${candidates[@]}"; do
+  IFS=$'\t' read -r ver file sha <<< "$line"
+  if [[ -z "$latest_ver" ]] || dpkg --compare-versions "$ver" gt "$latest_ver"; then
+    latest_ver="$ver"
+    latest_file="$file"
+    latest_sha="$sha"
+  fi
+done
+
+DEBVER="$latest_ver"
+DEBFILENAME="$latest_file"
+DEBSHA256="$latest_sha"
 
 echo "[+] Latest version: $DEBVER"
 echo "[+] File: $DEBFILENAME"
+echo "[+] SHA256: $DEBSHA256"
 
 # =============================
 # DOWNLOAD + VERIFY
